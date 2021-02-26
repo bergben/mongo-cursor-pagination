@@ -20,6 +20,7 @@ const bsonUrlEncoding = require('./utils/bsonUrlEncoding');
  *      The default is to query ONLY _id (note this is a difference from `find()`).
  *    -next {String} The value to start querying the page. Defaults to start at the beginning of
  *      the results.
+ *    -fuzzy {Object} Enable for fuzzy search as documented in the MongoDB Docs: https://docs.atlas.mongodb.com/reference/atlas-search/text/#fields
  */
 module.exports = async function(collection, searchString, params) {
   if (_.isString(params.limit)) params.limit = parseInt(params.limit, 10);
@@ -35,31 +36,67 @@ module.exports = async function(collection, searchString, params) {
 
   // We must perform an aggregate query since Mongo can't query a range when using $text search.
 
-  const aggregate = [
-    {
-      $match: _.extend({}, params.query, {
-        $text: {
-          $search: searchString,
-        },
-      }),
-    },
-    {
-      $project: _.extend({}, params.fields, {
-        _id: 1,
-        score: {
-          $meta: 'textScore',
-        },
-      }),
-    },
-    {
-      $sort: {
-        score: {
-          $meta: 'textScore',
-        },
-        _id: -1,
+  let aggregate = [];
+
+  if (params.fuzzy !== undefined && params.fuzzy !== null) {
+    // search fuzzy -> use $search aggregation with text operator
+    aggregate = [
+      {
+        $match: _.extend({}, params.query, {
+          $search: {
+            text: {
+              path: { wildcard: '*' }, // search all indexed fields
+              query: searchString,
+              fuzzy: params.fuzzy,
+            },
+          },
+        }),
       },
-    },
-  ];
+      {
+        $project: _.extend({}, params.fields, {
+          _id: 1,
+          score: {
+            $meta: 'searchScore',
+          },
+        }),
+      },
+      {
+        $sort: {
+          score: {
+            $meta: 'searchScore',
+          },
+          _id: -1,
+        },
+      },
+    ];
+  } else {
+    // search without fuzzy -> use $text aggregation
+    aggregate = [
+      {
+        $match: _.extend({}, params.query, {
+          $text: {
+            $search: searchString,
+          },
+        }),
+      },
+      {
+        $project: _.extend({}, params.fields, {
+          _id: 1,
+          score: {
+            $meta: 'textScore',
+          },
+        }),
+      },
+      {
+        $sort: {
+          score: {
+            $meta: 'textScore',
+          },
+          _id: -1,
+        },
+      },
+    ];
+  }
 
   if (params.next) {
     aggregate.push({
